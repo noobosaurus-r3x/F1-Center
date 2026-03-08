@@ -179,6 +179,70 @@ button {
   background: rgba(255, 216, 77, 0.08);
 }
 
+.race-summary {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.race-summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.race-summary-head strong,
+.race-summary-card strong {
+  font-family: 'Teko', sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.race-summary-head strong {
+  display: block;
+  font-size: 1.32rem;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.race-summary-head p,
+.race-summary-card span,
+.race-summary-card small {
+  color: var(--f1-muted);
+}
+
+.race-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(280px, 1.6fr);
+  gap: 10px;
+}
+
+.race-summary-card {
+  display: grid;
+  gap: 4px;
+  min-height: 92px;
+  padding: 12px 14px;
+  border: 1px solid var(--f1-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.race-summary-card strong {
+  font-size: 2rem;
+  line-height: 0.9;
+}
+
+.race-summary-card.is-headline {
+  align-content: center;
+}
+
+.race-summary-card.is-headline strong {
+  font-size: 1.4rem;
+  line-height: 0.96;
+}
+
 .panel {
   border: 1px solid var(--f1-line);
   border-radius: 24px;
@@ -1055,18 +1119,21 @@ div.driver-avatar {
 }
 
 .event-highlight.is-alert,
+.race-summary-card.is-alert,
 .live-chip.is-alert {
   border-color: rgba(255, 77, 77, 0.34);
   background: linear-gradient(180deg, rgba(255, 77, 77, 0.14), rgba(255, 255, 255, 0.03));
 }
 
 .event-highlight.is-warn,
+.race-summary-card.is-warn,
 .live-chip.is-warn {
   border-color: rgba(255, 216, 77, 0.28);
   background: linear-gradient(180deg, rgba(255, 216, 77, 0.1), rgba(255, 255, 255, 0.03));
 }
 
 .event-highlight.is-ok,
+.race-summary-card.is-ok,
 .live-chip.is-ok {
   border-color: rgba(0, 210, 106, 0.24);
   background: linear-gradient(180deg, rgba(0, 210, 106, 0.08), rgba(255, 255, 255, 0.03));
@@ -1143,6 +1210,14 @@ div.driver-avatar {
     grid-template-columns: 1fr;
   }
 
+  .race-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .race-summary-card.is-headline {
+    grid-column: 1 / -1;
+  }
+
   .hero-meta {
     grid-template-columns: 1fr;
   }
@@ -1174,6 +1249,10 @@ div.driver-avatar {
   .tab-list,
   .control-grid {
     grid-template-columns: 1fr;
+  }
+
+  .race-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .standings-head,
@@ -1254,6 +1333,10 @@ div.driver-avatar {
 @media (max-width: 560px) {
   .broadcast-topbar h1 {
     font-size: 2.6rem;
+  }
+
+  .race-summary-grid {
+    grid-template-columns: 1fr;
   }
 
   .podium-card {

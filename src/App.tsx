@@ -237,6 +237,13 @@ interface TeamStandingEntry {
   accent: string;
 }
 
+interface RaceSummaryStat {
+  label: string;
+  value: string;
+  tone?: string;
+  detail?: string;
+}
+
 const TABS: Array<{ key: TabKey; label: string; detail: string }> = [
   { key: 'results', label: 'Résultats', detail: 'Podium, classement et écarts.' },
   { key: 'weather', label: 'Météo', detail: 'Température et conditions de piste.' },
@@ -1082,7 +1089,7 @@ function App() {
   const raceControlQuery = useEndpointData<RaceControlMessage>(
     'race_control',
     selectedSessionKey ? { session_key: selectedSessionKey } : {},
-    (activeTab === 'events' || isLiveRaceSession) && Boolean(selectedSessionKey),
+    (activeTab === 'events' || isRaceSessionSelected) && Boolean(selectedSessionKey),
     liveRefreshMs,
   );
   const pitQuery = useEndpointData<PitRow>(
@@ -1094,7 +1101,7 @@ function App() {
   const overtakesQuery = useEndpointData<OvertakeRow>(
     'overtakes',
     selectedSessionKey ? { session_key: selectedSessionKey } : {},
-    activeTab === 'events' && Boolean(selectedSessionKey),
+    (activeTab === 'events' || isRaceSessionSelected) && Boolean(selectedSessionKey),
     liveRefreshMs,
   );
   const weatherQuery = useEndpointData<WeatherSample>(
@@ -1478,6 +1485,82 @@ function App() {
       .sort((left, right) => parseOpenF1Date(right.date) - parseOpenF1Date(left.date))
       .slice(0, 5);
   }, [raceControlRows]);
+  const raceSummary = useMemo(() => {
+    const safetyCarDeployments = raceControlQuery.data.filter((row) => {
+      const raw = getRaceControlRawText(row);
+      return /safety car deployed|sc deployed/.test(raw) && !/virtual|vsc/.test(raw);
+    }).length;
+
+    const vscDeployments = raceControlQuery.data.filter((row) => {
+      const raw = getRaceControlRawText(row);
+      return /virtual safety car deployed|vsc deployed/.test(raw);
+    }).length;
+
+    const penaltyCount = raceControlQuery.data.filter((row) => {
+      const raw = getRaceControlRawText(row);
+      return /penalty|drive through|stop\/go|disqualified/.test(raw);
+    }).length;
+
+    const retirementSignatures = new Set<string>();
+    raceControlQuery.data.forEach((row) => {
+      const raw = getRaceControlRawText(row);
+      if (/retired|abandon|has stopped|stopped on track/.test(raw)) {
+        retirementSignatures.add(row.driver_number ? `driver-${row.driver_number}` : `${raw}-${row.date}`);
+      }
+    });
+    classificationEntries.forEach((entry) => {
+      if (/abandon/i.test(entry.gapLabel)) {
+        retirementSignatures.add(`classification-${entry.driverNumber}`);
+      }
+    });
+
+    const keyOvertakeCount = new Set(
+      overtakeRows.filter((row) => row.priority >= 82).map((row) => `${row.headline}-${row.body}`),
+    ).size;
+    const latestHeadline = featuredEventRows[0] || tickerRows[0] || eventRows[0] || null;
+    const stats: RaceSummaryStat[] = [
+      {
+        label: 'SC',
+        value: String(safetyCarDeployments),
+        tone: safetyCarDeployments ? 'is-warn' : undefined,
+        detail: safetyCarDeployments ? 'Déploiements' : 'Aucun',
+      },
+      {
+        label: 'VSC',
+        value: String(vscDeployments),
+        tone: vscDeployments ? 'is-warn' : undefined,
+        detail: vscDeployments ? 'Déploiements' : 'Aucun',
+      },
+      {
+        label: 'Pénalités',
+        value: String(penaltyCount),
+        tone: penaltyCount ? 'is-alert' : undefined,
+        detail: penaltyCount ? 'Messages officiels' : 'Aucune',
+      },
+      {
+        label: 'Abandons',
+        value: String(retirementSignatures.size),
+        tone: retirementSignatures.size ? 'is-alert' : undefined,
+        detail: retirementSignatures.size ? 'Pilotes touchés' : 'Aucun',
+      },
+      {
+        label: 'Dépassements clés',
+        value: String(keyOvertakeCount),
+        tone: keyOvertakeCount ? 'is-ok' : undefined,
+        detail: keyOvertakeCount ? 'Leader et podium' : 'Aucun',
+      },
+    ];
+
+    return {
+      stats,
+      latestHeadline,
+      hasData:
+        Boolean(raceControlQuery.data.length) ||
+        Boolean(overtakesQuery.data.length) ||
+        Boolean(featuredEventRows.length) ||
+        Boolean(tickerRows.length),
+    };
+  }, [classificationEntries, eventRows, featuredEventRows, overtakesQuery.data.length, overtakeRows, raceControlQuery.data, tickerRows]);
   const weatherRows = useMemo(() => downsample(sortByDate(weatherQuery.data), 120), [weatherQuery.data]);
   const latestWeather = weatherRows[weatherRows.length - 1];
   const championshipDrivers = useMemo<DriverStandingEntry[]>(
@@ -1632,6 +1715,38 @@ function App() {
                 <small>Session live</small>
               </article>
             )}
+          </div>
+        </section>
+      ) : null}
+
+      {isRaceSessionSelected && (raceSummary.hasData || raceControlQuery.loading || overtakesQuery.loading) ? (
+        <section className="race-summary panel" aria-label="Résumé course">
+          <div className="race-summary-head">
+            <div>
+              <strong>{isSessionLive ? 'Résumé live' : 'Résumé course'}</strong>
+              <p>{isSessionLive ? 'Compte rendu mis à jour automatiquement pendant la course.' : 'Résumé conservé après l’arrivée.'}</p>
+            </div>
+            <span className={`session-state-pill ${isSessionLive ? 'is-live' : ''}`}>
+              {isSessionLive ? 'En direct' : 'Archivé'}
+            </span>
+          </div>
+          <div className="race-summary-grid">
+            {raceSummary.stats.map((stat) => (
+              <article key={stat.label} className={`race-summary-card ${stat.tone || ''}`}>
+                <span>{stat.label}</span>
+                <strong>{stat.value}</strong>
+                <small>{stat.detail || 'n/d'}</small>
+              </article>
+            ))}
+            <article className={`race-summary-card is-headline ${raceSummary.latestHeadline?.tone || ''}`}>
+              <span>Dernier fait marquant</span>
+              <strong>{raceSummary.latestHeadline?.headline || 'Aucun fait saillant détecté'}</strong>
+              <small>
+                {raceSummary.latestHeadline
+                  ? `${raceSummary.latestHeadline.body} · ${raceSummary.latestHeadline.lapLabel || formatDateTime(raceSummary.latestHeadline.date)}`
+                  : 'Le résumé restera visible même après la fin du live.'}
+              </small>
+            </article>
           </div>
         </section>
       ) : null}
