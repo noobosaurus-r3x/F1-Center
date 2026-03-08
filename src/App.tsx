@@ -12,7 +12,7 @@ import {
   toNumeric,
 } from './lib/format';
 
-type TabKey = 'results' | 'weather' | 'telemetry' | 'events';
+type TabKey = 'results' | 'driver' | 'weather' | 'telemetry' | 'events';
 type WindowPreset = 'full' | '15m' | '5m';
 type OpenF1Row = Record<string, unknown>;
 
@@ -62,12 +62,16 @@ interface SessionResult extends OpenF1Row {
   dns?: boolean;
   dsq?: boolean;
   team_name?: string;
+  meeting_key?: number;
+  session_key?: number;
 }
 
 interface StartingGridRow extends OpenF1Row {
   driver_number: number;
   position?: number;
   lap_duration?: number;
+  meeting_key?: number;
+  session_key?: number;
 }
 
 interface LapRow extends OpenF1Row {
@@ -244,8 +248,24 @@ interface RaceSummaryStat {
   detail?: string;
 }
 
+interface DriverSeasonRaceEntry {
+  meetingKey: number;
+  sessionKey: number;
+  meetingLabel: string;
+  dateLabel: string;
+  locationLabel: string;
+  position: number | null;
+  gridPosition: number | null;
+  points: number;
+  lapsCompleted: number | null;
+  statusLabel: string | null;
+  gapLabel: string;
+  completed: boolean;
+}
+
 const TABS: Array<{ key: TabKey; label: string; detail: string }> = [
   { key: 'results', label: 'Résultats', detail: 'Podium, classement et écarts.' },
+  { key: 'driver', label: 'Pilotes', detail: 'Fiche saison, points et résultats course par course.' },
   { key: 'weather', label: 'Météo', detail: 'Température et conditions de piste.' },
   { key: 'telemetry', label: 'Télémétrie', detail: 'Comparaison des leaders.' },
   { key: 'events', label: 'Événements', detail: 'Course, stands, drapeaux et dépassements.' },
@@ -497,6 +517,24 @@ const getSessionTypeLabel = (value?: string | null) => {
       return value || 'n/d';
   }
 };
+
+const isRaceSession = (session?: Session | null) => {
+  const type = session?.session_type?.toLowerCase();
+  const name = session?.session_name?.toLowerCase();
+  return type === 'race' || name === 'race';
+};
+
+const isGrandPrixRaceSession = (session?: Session | null) =>
+  isRaceSession(session) && session?.session_name?.toLowerCase() === 'race';
+
+const isQualifyingSession = (session?: Session | null) => {
+  const type = session?.session_type?.toLowerCase();
+  const name = session?.session_name?.toLowerCase();
+  return type === 'qualifying' || name === 'qualifying';
+};
+
+const isGrandPrixQualifyingSession = (session?: Session | null) =>
+  isQualifyingSession(session) && session?.session_name?.toLowerCase() === 'qualifying';
 
 const getMeetingLabel = (meeting?: Meeting | null) => {
   if (!meeting) {
@@ -942,6 +980,7 @@ function App() {
 
   const latestMeetingQuery = useEndpointData<Meeting>('meetings', { meeting_key: 'latest' }, true);
   const meetingsQuery = useEndpointData<Meeting>('meetings', { year: selectedYear }, true);
+  const seasonSessionsQuery = useEndpointData<Session>('sessions', { year: selectedYear }, true);
   const meetings = useMemo(
     () =>
       [...meetingsQuery.data].sort(
@@ -984,6 +1023,14 @@ function App() {
       ),
     [sessionsQuery.data],
   );
+  const seasonSessions = useMemo(
+    () =>
+      [...seasonSessionsQuery.data].sort(
+        (left, right) =>
+          parseOpenF1Date(String(left.date_start ?? '')) - parseOpenF1Date(String(right.date_start ?? '')),
+      ),
+    [seasonSessionsQuery.data],
+  );
 
   useEffect(() => {
     if (!sessions.length) {
@@ -994,9 +1041,9 @@ function App() {
       return;
     }
 
-    const raceSession = [...sessions]
-      .reverse()
-      .find((session) => session.session_type?.toLowerCase() === 'race' || session.session_name?.toLowerCase() === 'race');
+    const raceSession =
+      [...sessions].reverse().find((session) => isGrandPrixRaceSession(session)) ||
+      [...sessions].reverse().find((session) => isRaceSession(session));
 
     setSelectedSessionKey((raceSession || sessions[sessions.length - 1])?.session_key ?? null);
   }, [selectedSessionKey, sessions]);
@@ -1019,30 +1066,53 @@ function App() {
 
   const selectedMeeting = meetings.find((meeting) => meeting.meeting_key === selectedMeetingKey) ?? latestMeetingQuery.data[0];
   const selectedSession = sessions.find((session) => session.session_key === selectedSessionKey);
+  const meetingLookup = useMemo(() => new Map(meetings.map((meeting) => [meeting.meeting_key, meeting])), [meetings]);
   const sessionPhase = getSessionPhase(selectedSession, nowMs);
   const isSessionLive = sessionPhase === 'live';
-  const isRaceSessionSelected =
-    selectedSession?.session_type?.toLowerCase() === 'race' || selectedSession?.session_name?.toLowerCase() === 'race';
+  const isRaceSessionSelected = isRaceSession(selectedSession);
   const isLiveRaceSession = isSessionLive && Boolean(isRaceSessionSelected);
   const liveRefreshMs = isSessionLive ? LIVE_REFRESH_MS : 0;
   const weatherRefreshMs = isSessionLive ? WEATHER_REFRESH_MS : 0;
   const raceSessionKey = useMemo(() => {
-    const raceSession = sessions.find(
-      (session) => session.session_type?.toLowerCase() === 'race' || session.session_name?.toLowerCase() === 'race',
-    );
+    const raceSession = sessions.find((session) => isGrandPrixRaceSession(session)) || sessions.find((session) => isRaceSession(session));
     return raceSession?.session_key ?? null;
   }, [sessions]);
+  const seasonRaceSessions = useMemo(
+    () => seasonSessions.filter((session) => isGrandPrixRaceSession(session)),
+    [seasonSessions],
+  );
+  const seasonRaceSessionKeySet = useMemo(
+    () => new Set(seasonRaceSessions.map((session) => session.session_key)),
+    [seasonRaceSessions],
+  );
+  const seasonRaceMeetingKeys = useMemo(
+    () => Array.from(new Set(seasonRaceSessions.map((session) => session.meeting_key))),
+    [seasonRaceSessions],
+  );
+  const qualifyingSessionKeyByMeeting = useMemo(() => {
+    const map = new Map<number, number>();
+    seasonSessions.forEach((session) => {
+      if (isGrandPrixQualifyingSession(session)) {
+        map.set(session.meeting_key, session.session_key);
+        return;
+      }
+
+      if (!isQualifyingSession(session) || map.has(session.meeting_key)) {
+        return;
+      }
+      map.set(session.meeting_key, session.session_key);
+    });
+    return map;
+  }, [seasonSessions]);
   const startingGridSessionKey = useMemo(() => {
     if (!selectedSession) {
       return null;
     }
 
-    if (selectedSession.session_type?.toLowerCase() === 'race') {
-      const qualifyingSession = sessions.find(
-        (session) =>
-          session.session_type?.toLowerCase() === 'qualifying' ||
-          session.session_name?.toLowerCase().includes('qualifying'),
-      );
+    if (isRaceSession(selectedSession)) {
+      const qualifyingSession =
+        sessions.find((session) => isGrandPrixQualifyingSession(session)) ||
+        sessions.find((session) => isQualifyingSession(session));
       return qualifyingSession?.session_key ?? selectedSession.session_key;
     }
 
@@ -1119,6 +1189,20 @@ function App() {
     'championship_teams',
     championshipSessionKey ? { session_key: championshipSessionKey } : {},
     Boolean(championshipSessionKey),
+  );
+  const driverSeasonResultsQuery = useEndpointData<SessionResult>(
+    'session_result',
+    selectedDriverNumber && seasonRaceMeetingKeys.length
+      ? { meeting_key: seasonRaceMeetingKeys, driver_number: selectedDriverNumber }
+      : {},
+    activeTab === 'driver' && Boolean(selectedDriverNumber && seasonRaceMeetingKeys.length),
+  );
+  const driverSeasonGridQuery = useEndpointData<StartingGridRow>(
+    'starting_grid',
+    selectedDriverNumber && seasonRaceMeetingKeys.length
+      ? { meeting_key: seasonRaceMeetingKeys, driver_number: selectedDriverNumber }
+      : {},
+    activeTab === 'driver' && Boolean(selectedDriverNumber && seasonRaceMeetingKeys.length),
   );
 
   const latestPositionByDriver = useMemo(() => {
@@ -1662,9 +1746,131 @@ function App() {
   const championshipLoading = championshipDriversQuery.loading || championshipTeamsQuery.loading;
   const championshipError =
     championshipDrivers.length || championshipTeams.length ? null : championshipDriversQuery.error || championshipTeamsQuery.error;
+  const driverDirectory = useMemo(
+    () =>
+      championshipDrivers.length
+        ? championshipDrivers
+        : drivers
+            .map((driver, index) => ({
+              driverNumber: driver.driver_number,
+              position: index + 1,
+              positionDelta: null,
+              points: 0,
+              leaderGap: 0,
+              driver,
+              accent: getTeamColor(undefined, driver),
+              teamName: getTeamName(undefined, driver),
+            }))
+            .sort((left, right) => getDriverName(left.driver).localeCompare(getDriverName(right.driver))),
+    [championshipDrivers, drivers],
+  );
+  const selectedDriverStanding = championshipDrivers.find((entry) => entry.driverNumber === selectedDriverNumber) ?? null;
+  const seasonResultBySession = useMemo(() => {
+    const map = new Map<number, SessionResult>();
+    driverSeasonResultsQuery.data.forEach((row) => {
+      const sessionKey = Number(row.session_key ?? 0);
+      if (!seasonRaceSessionKeySet.has(sessionKey)) {
+        return;
+      }
+      map.set(sessionKey, row);
+    });
+    return map;
+  }, [driverSeasonResultsQuery.data, seasonRaceSessionKeySet]);
+  const seasonGridByMeeting = useMemo(() => {
+    const fallback = new Map<number, StartingGridRow>();
+    const preferred = new Map<number, StartingGridRow>();
+
+    driverSeasonGridQuery.data.forEach((row) => {
+      const meetingKey = Number(row.meeting_key ?? 0);
+      if (!meetingKey) {
+        return;
+      }
+
+      if (!fallback.has(meetingKey)) {
+        fallback.set(meetingKey, row);
+      }
+
+      const preferredSessionKey = qualifyingSessionKeyByMeeting.get(meetingKey);
+      if (preferredSessionKey && Number(row.session_key ?? 0) === preferredSessionKey) {
+        preferred.set(meetingKey, row);
+      }
+    });
+
+    return new Map([...fallback.entries(), ...preferred.entries()]);
+  }, [driverSeasonGridQuery.data, qualifyingSessionKeyByMeeting]);
+  const driverSeasonEntries = useMemo<DriverSeasonRaceEntry[]>(
+    () =>
+      seasonRaceSessions.map((session) => {
+        const meeting = meetingLookup.get(session.meeting_key);
+        const result = seasonResultBySession.get(session.session_key);
+        const gridRow = seasonGridByMeeting.get(session.meeting_key);
+        const statusLabel = getStatusLabel(result);
+        const position = result ? Number(result.position ?? 0) || null : null;
+        const points = toNumeric(result?.points) ?? 0;
+        const sessionState = getSessionPhase(session, nowMs);
+        const gapLabel = result
+          ? position === 1
+            ? formatRaceTime(result.duration)
+            : statusLabel || formatGapDisplay(result.gap_to_leader)
+          : sessionState === 'upcoming'
+            ? 'À venir'
+            : sessionState === 'live'
+              ? 'En cours'
+              : 'n/d';
+
+        return {
+          meetingKey: session.meeting_key,
+          sessionKey: session.session_key,
+          meetingLabel: getMeetingLabel(meeting),
+          dateLabel: formatDateLabel(session.date_start || meeting?.date_start),
+          locationLabel: safeText(meeting?.circuit_short_name || meeting?.location, 'Circuit n/d'),
+          position,
+          gridPosition: gridRow ? Number(gridRow.position ?? 0) || null : null,
+          points,
+          lapsCompleted: result ? Number(result.number_of_laps ?? 0) || null : null,
+          statusLabel,
+          gapLabel,
+          completed: Boolean(result),
+        };
+      }),
+    [meetingLookup, nowMs, seasonGridByMeeting, seasonRaceSessions, seasonResultBySession],
+  );
+  const completedDriverSeasonEntries = useMemo(
+    () => driverSeasonEntries.filter((entry) => entry.completed),
+    [driverSeasonEntries],
+  );
+  const seasonWins = completedDriverSeasonEntries.filter((entry) => entry.position === 1).length;
+  const seasonPodiums = completedDriverSeasonEntries.filter((entry) => (entry.position ?? 99) <= 3).length;
+  const seasonTopTen = completedDriverSeasonEntries.filter((entry) => (entry.position ?? 99) <= 10).length;
+  const seasonAverageFinish = average(completedDriverSeasonEntries.map((entry) => entry.position));
+  const seasonAverageGrid = average(completedDriverSeasonEntries.map((entry) => entry.gridPosition));
+  const seasonNetGain = completedDriverSeasonEntries.reduce((total, entry) => {
+    if (!entry.gridPosition || !entry.position) {
+      return total;
+    }
+    return total + (entry.gridPosition - entry.position);
+  }, 0);
+  const bestSeasonResult = completedDriverSeasonEntries.reduce<number | null>((best, entry) => {
+    if (!entry.position) {
+      return best;
+    }
+    return best === null ? entry.position : Math.min(best, entry.position);
+  }, null);
+  const recentDriverResults = completedDriverSeasonEntries.slice(-5).reverse();
+  const driverSeasonLoading = seasonSessionsQuery.loading || driverSeasonResultsQuery.loading || driverSeasonGridQuery.loading;
+  const driverSeasonError =
+    driverSeasonResultsQuery.error || driverSeasonGridQuery.error || (seasonRaceSessions.length ? null : seasonSessionsQuery.error);
+
+  useEffect(() => {
+    if (!selectedDriverNumber && driverDirectory.length) {
+      setSelectedDriverNumber(driverDirectory[0].driverNumber);
+    }
+  }, [driverDirectory, selectedDriverNumber]);
 
   const selectedEntry = classificationEntries.find((entry) => entry.driverNumber === selectedDriverNumber);
   const selectedDriver = selectedEntry?.driver || drivers.find((driver) => driver.driver_number === selectedDriverNumber);
+  const selectedDriverProfile =
+    selectedDriver || selectedDriverStanding?.driver || driverDirectory.find((entry) => entry.driverNumber === selectedDriverNumber)?.driver;
   const aheadEntry = selectedEntry && selectedEntry.position > 1
     ? classificationEntries.find((entry) => entry.position === selectedEntry.position - 1)
     : undefined;
@@ -1945,6 +2151,122 @@ function App() {
         </main>
       )}
 
+      {activeTab === 'driver' && (
+        <main className="driver-season-layout">
+          <aside className="panel driver-directory-panel">
+            <SectionHeading
+              title="Pilotes"
+              detail="Classement saison. Clique sur un pilote pour ouvrir sa fiche complète."
+              loading={championshipLoading && !driverDirectory.length}
+            />
+            {championshipError && !driverDirectory.length ? <ErrorBanner message={championshipError} /> : null}
+            {driverDirectory.length ? (
+              <div className="driver-directory-list">
+                {driverDirectory.map((entry) => (
+                  <button
+                    key={entry.driverNumber}
+                    type="button"
+                    className={`driver-directory-row ${selectedDriverNumber === entry.driverNumber ? 'is-selected' : ''}`}
+                    style={{ '--team-accent': entry.accent } as CSSProperties}
+                    onClick={() => handleSelectDriver(entry.driverNumber)}
+                  >
+                    <strong>P{entry.position}</strong>
+                    <DriverChip driver={entry.driver} accent={entry.accent} compact />
+                    <div className="driver-directory-meta">
+                      <span>{getTeamShortName(entry.teamName)}</span>
+                      <strong>{formatValue(entry.points)} pts</strong>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="Liste pilotes indisponible"
+                copy="Le classement championnat fournira automatiquement la liste dès qu’une course est publiée."
+                compact
+              />
+            )}
+          </aside>
+
+          <section className="driver-season-main">
+            <section className="panel driver-season-hero">
+              <SectionHeading
+                title="Fiche pilote"
+                detail={`Saison ${selectedYear} · points championnat et résultats course par course.`}
+                loading={driverSeasonLoading}
+              />
+              {driverSeasonError ? <ErrorBanner message={driverSeasonError} /> : null}
+              {selectedDriverNumber && selectedDriverProfile ? (
+                <>
+                  <div
+                    className="driver-season-profile"
+                    style={{ '--team-accent': getTeamColor(undefined, selectedDriverProfile) } as CSSProperties}
+                  >
+                    <Avatar driver={selectedDriverProfile} size="hero" accent={getTeamColor(undefined, selectedDriverProfile)} />
+                    <div className="driver-season-profile-copy">
+                      <p className="kicker">Pilote</p>
+                      <h3>{getDriverName(selectedDriverProfile)}</h3>
+                      <div className="driver-season-profile-badges">
+                        <span className="team-badge">{getTeamName(undefined, selectedDriverProfile)}</span>
+                        <span className="team-badge">#{selectedDriverProfile.driver_number}</span>
+                        {selectedDriverStanding ? <span className="team-badge">Championnat P{selectedDriverStanding.position}</span> : null}
+                      </div>
+                      <div className="season-form-row">
+                        {recentDriverResults.length ? (
+                          recentDriverResults.map((entry) => (
+                            <span
+                              key={`${entry.sessionKey}-${entry.position ?? entry.gapLabel}`}
+                              className={`season-form-chip ${entry.statusLabel ? 'is-alert' : entry.position === 1 ? 'is-win' : ''}`}
+                              title={`${entry.meetingLabel} · ${entry.gapLabel}`}
+                            >
+                              {entry.statusLabel ? entry.statusLabel.slice(0, 3).toUpperCase() : `P${entry.position}`}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="muted">Aucun résultat course publié pour l’instant.</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="metric-grid driver-season-metrics">
+                    <MetricCard label="Points championnat" value={`${formatValue(selectedDriverStanding?.points ?? completedDriverSeasonEntries.reduce((sum, entry) => sum + entry.points, 0))}`} />
+                    <MetricCard label="Écart au leader" value={formatLeaderGapPoints(selectedDriverStanding?.leaderGap ?? 0)} />
+                    <MetricCard label="Victoires" value={String(seasonWins)} />
+                    <MetricCard label="Podiums" value={String(seasonPodiums)} />
+                    <MetricCard label="Top 10" value={String(seasonTopTen)} />
+                    <MetricCard label="Meilleure arrivée" value={bestSeasonResult ? `P${bestSeasonResult}` : 'n/d'} />
+                    <MetricCard label="Moy. départ" value={seasonAverageGrid ? `P${seasonAverageGrid.toFixed(1)}` : 'n/d'} />
+                    <MetricCard label="Moy. arrivée" value={seasonAverageFinish ? `P${seasonAverageFinish.toFixed(1)}` : 'n/d'} />
+                    <MetricCard label="Gain net" value={seasonNetGain > 0 ? `+${seasonNetGain}` : String(seasonNetGain)} />
+                    <MetricCard label="Courses avec résultat" value={String(completedDriverSeasonEntries.length)} />
+                  </div>
+                </>
+              ) : (
+                <EmptyState title="Aucun pilote sélectionné" copy="Choisis un pilote dans la liste de gauche pour afficher sa saison." />
+              )}
+            </section>
+
+            <section className="panel driver-season-results">
+              <SectionHeading
+                title="Résultats de la saison"
+                detail="Courses uniquement. Le total championnat inclut aussi les points de sprint quand OpenF1 les publie."
+                loading={driverSeasonLoading}
+              />
+              {driverSeasonError ? <ErrorBanner message={driverSeasonError} /> : null}
+              {driverSeasonEntries.length ? (
+                <DriverSeasonTable entries={driverSeasonEntries} />
+              ) : (
+                <EmptyState
+                  title="Saison pilote indisponible"
+                  copy="Aucune course trouvée pour cette saison ou aucun résultat publié pour ce pilote."
+                />
+              )}
+            </section>
+          </section>
+        </main>
+      )}
+
       {activeTab === 'telemetry' && (
         <main className="tab-grid">
           <section className="panel telemetry-lead">
@@ -2215,6 +2537,43 @@ function StandingsTable({
                 <span className="standing-points-delta">{formatLeaderGapPoints(row.leaderGap)}</span>
               </div>
             ))}
+      </div>
+    </div>
+  );
+}
+
+function DriverSeasonTable({ entries }: { entries: DriverSeasonRaceEntry[] }) {
+  return (
+    <div className="driver-season-table">
+      <div className="driver-season-head">
+        <span>Date</span>
+        <span>Grand Prix</span>
+        <span>Résultat</span>
+        <span>Grille</span>
+        <span>Pts</span>
+        <span>Écart / statut</span>
+        <span>Tours</span>
+      </div>
+      <div className="driver-season-body">
+        {entries.map((entry) => (
+          <article
+            key={`${entry.sessionKey}-${entry.meetingKey}`}
+            className={`driver-season-row ${entry.statusLabel ? 'is-alert' : ''} ${entry.completed ? '' : 'is-muted'}`}
+          >
+            <strong className="driver-season-date" data-label="Date">{entry.dateLabel}</strong>
+            <div className="driver-season-meeting">
+              <strong>{entry.meetingLabel}</strong>
+              <span>{entry.locationLabel}</span>
+            </div>
+            <strong className="driver-season-result" data-label="Résultat">
+              {entry.statusLabel ? entry.statusLabel : entry.position ? `P${entry.position}` : 'n/d'}
+            </strong>
+            <span className="driver-season-grid" data-label="Grille">{entry.gridPosition ? `P${entry.gridPosition}` : 'n/d'}</span>
+            <strong className="driver-season-points" data-label="Pts">{formatValue(entry.points)}</strong>
+            <span className="driver-season-gap" data-label="Écart / statut">{entry.gapLabel}</span>
+            <span className="driver-season-laps" data-label="Tours">{entry.lapsCompleted ? `${entry.lapsCompleted}` : 'n/d'}</span>
+          </article>
+        ))}
       </div>
     </div>
   );
