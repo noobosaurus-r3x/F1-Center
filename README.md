@@ -1,5 +1,6 @@
 # F1 Center
 https://noobosaurus-r3x.github.io/F1-Center/
+
 Application web OpenF1 en français.
 Usage perso, c'est pas la peine d'espérer un truc intéressant, c'est de l'AI slop a 100%.
 
