@@ -109,6 +109,22 @@ interface RaceControlMessage extends OpenF1Row {
   driver_number?: number;
 }
 
+interface ChampionshipDriverRow extends OpenF1Row {
+  driver_number: number;
+  points_current?: number;
+  points_start?: number;
+  position_current?: number;
+  position_start?: number;
+}
+
+interface ChampionshipTeamRow extends OpenF1Row {
+  team_name?: string;
+  points_current?: number;
+  points_start?: number;
+  position_current?: number;
+  position_start?: number;
+}
+
 interface PitRow extends OpenF1Row {
   date: string;
   driver_number: number;
@@ -198,6 +214,26 @@ interface EventFeedItem {
   lapLabel?: string;
 }
 
+interface DriverStandingEntry {
+  driverNumber: number;
+  position: number;
+  positionDelta: number | null;
+  points: number;
+  pointsDelta: number | null;
+  driver: Driver | undefined;
+  accent: string;
+  teamName: string;
+}
+
+interface TeamStandingEntry {
+  teamName: string;
+  position: number;
+  positionDelta: number | null;
+  points: number;
+  pointsDelta: number | null;
+  accent: string;
+}
+
 const TABS: Array<{ key: TabKey; label: string; detail: string }> = [
   { key: 'results', label: 'Résultats', detail: 'Podium, classement et écarts.' },
   { key: 'weather', label: 'Météo', detail: 'Température et conditions de piste.' },
@@ -222,6 +258,8 @@ const INTEGRATED_ENDPOINT_KEYS = [
   'overtakes',
   'session_result',
   'starting_grid',
+  'championship_drivers',
+  'championship_teams',
 ] as const;
 
 const TEAM_COLORS: Record<string, string> = {
@@ -658,6 +696,20 @@ const isMinorRaceControlMessage = (row: RaceControlMessage) => {
   return /blue/.test(raw) || /clear in track sector/.test(raw) || /all pass holders/.test(raw);
 };
 
+const getTeamShortName = (teamName?: string | null) => {
+  const value = String(teamName || '').trim();
+  if (!value) {
+    return 'n/d';
+  }
+
+  return value
+    .replace(/^Scuderia\s+/i, '')
+    .replace(/\s+Racing$/i, '')
+    .replace(/\s+F1 Team$/i, '')
+    .replace(/^Aston Martin Aramco /i, 'Aston Martin ')
+    .trim();
+};
+
 const filterRowsByWindow = <T extends OpenF1Row>(rows: T[], session: Session | undefined, windowPreset: WindowPreset) => {
   if (windowPreset === 'full' || !session?.date_start) {
     return rows;
@@ -814,6 +866,12 @@ function App() {
 
   const selectedMeeting = meetings.find((meeting) => meeting.meeting_key === selectedMeetingKey) ?? latestMeetingQuery.data[0];
   const selectedSession = sessions.find((session) => session.session_key === selectedSessionKey);
+  const raceSessionKey = useMemo(() => {
+    const raceSession = sessions.find(
+      (session) => session.session_type?.toLowerCase() === 'race' || session.session_name?.toLowerCase() === 'race',
+    );
+    return raceSession?.session_key ?? null;
+  }, [sessions]);
   const startingGridSessionKey = useMemo(() => {
     if (!selectedSession) {
       return null;
@@ -830,6 +888,7 @@ function App() {
 
     return selectedSession.session_key;
   }, [selectedSession, sessions]);
+  const championshipSessionKey = raceSessionKey ?? (selectedSession?.session_type?.toLowerCase() === 'race' ? selectedSession.session_key : null);
 
   const sessionResultQuery = useEndpointData<SessionResult>(
     'session_result',
@@ -865,6 +924,16 @@ function App() {
     'weather',
     selectedMeetingKey ? { meeting_key: selectedMeetingKey } : {},
     activeTab === 'weather' && Boolean(selectedMeetingKey),
+  );
+  const championshipDriversQuery = useEndpointData<ChampionshipDriverRow>(
+    'championship_drivers',
+    championshipSessionKey ? { session_key: championshipSessionKey } : {},
+    Boolean(championshipSessionKey),
+  );
+  const championshipTeamsQuery = useEndpointData<ChampionshipTeamRow>(
+    'championship_teams',
+    championshipSessionKey ? { session_key: championshipSessionKey } : {},
+    Boolean(championshipSessionKey),
   );
 
   const latestPositionByDriver = useMemo(() => {
@@ -1124,6 +1193,100 @@ function App() {
   }, [driverLookup, overtakesQuery.data, pitQuery.data, raceControlQuery.data]);
   const weatherRows = useMemo(() => downsample(sortByDate(weatherQuery.data), 120), [weatherQuery.data]);
   const latestWeather = weatherRows[weatherRows.length - 1];
+  const championshipDrivers = useMemo<DriverStandingEntry[]>(
+    () =>
+      [...championshipDriversQuery.data]
+        .sort((left, right) => Number(left.position_current ?? 999) - Number(right.position_current ?? 999))
+        .map((row, index) => {
+          const driver = driverLookup.get(Number(row.driver_number));
+          const position = Number(row.position_current ?? index + 1);
+          const positionStart = Number(row.position_start ?? 0);
+          const points = toNumeric(row.points_current) ?? 0;
+          const pointsStart = toNumeric(row.points_start) ?? null;
+          const teamName = getTeamName(undefined, driver);
+          return {
+            driverNumber: Number(row.driver_number),
+            position,
+            positionDelta: positionStart ? positionStart - position : null,
+            points,
+            pointsDelta: pointsStart === null ? null : points - pointsStart,
+            driver,
+            accent: getTeamColor(undefined, driver),
+            teamName,
+          };
+        }),
+    [championshipDriversQuery.data, driverLookup],
+  );
+  const championshipTeams = useMemo<TeamStandingEntry[]>(
+    () => {
+      const hasCompleteEndpointRows = championshipTeamsQuery.data.length && championshipTeamsQuery.data.every((row) => row.team_name);
+      if (hasCompleteEndpointRows) {
+        return [...championshipTeamsQuery.data]
+          .sort((left, right) => Number(left.position_current ?? 999) - Number(right.position_current ?? 999))
+          .map((row, index) => {
+            const position = Number(row.position_current ?? index + 1);
+            const positionStart = Number(row.position_start ?? 0);
+            const points = toNumeric(row.points_current) ?? 0;
+            const pointsStart = toNumeric(row.points_start) ?? null;
+            const teamName = safeText(row.team_name, 'Équipe');
+            return {
+              teamName,
+              position,
+              positionDelta: positionStart ? positionStart - position : null,
+              points,
+              pointsDelta: pointsStart === null ? null : points - pointsStart,
+              accent: getTeamColor(teamName),
+            };
+          });
+      }
+
+      const teamMap = new Map<
+        string,
+        { teamName: string; points: number; pointsStart: number | null; accent: string }
+      >();
+
+      championshipDriversQuery.data.forEach((row) => {
+        const driver = driverLookup.get(Number(row.driver_number));
+        const teamName = driver?.team_name;
+        if (!teamName) {
+          return;
+        }
+
+        const current = toNumeric(row.points_current) ?? 0;
+        const start = toNumeric(row.points_start);
+        const existing = teamMap.get(teamName) ?? {
+          teamName,
+          points: 0,
+          pointsStart: 0,
+          accent: getTeamColor(teamName, driver),
+        };
+
+        existing.points += current;
+        existing.pointsStart = (existing.pointsStart ?? 0) + (start ?? 0);
+        teamMap.set(teamName, existing);
+      });
+
+      const currentRows = [...teamMap.values()].sort((left, right) => right.points - left.points || left.teamName.localeCompare(right.teamName));
+      const startRows = [...teamMap.values()].sort(
+        (left, right) => (right.pointsStart ?? 0) - (left.pointsStart ?? 0) || left.teamName.localeCompare(right.teamName),
+      );
+      const startIndex = new Map(startRows.map((row, index) => [row.teamName, index + 1]));
+      const hasMeaningfulStartOrder = new Set(startRows.map((row) => row.pointsStart ?? 0)).size > 1;
+
+      return currentRows.map((row, index) => ({
+        teamName: row.teamName,
+        position: index + 1,
+        positionDelta: hasMeaningfulStartOrder ? (startIndex.get(row.teamName) ?? index + 1) - (index + 1) : null,
+        points: row.points,
+        pointsDelta: row.pointsStart === null ? null : row.points - row.pointsStart,
+        accent: row.accent,
+      }));
+    },
+    [championshipDriversQuery.data, championshipTeamsQuery.data, driverLookup],
+  );
+  const championshipLoading = championshipDriversQuery.loading || championshipTeamsQuery.loading;
+  const championshipError =
+    championshipDrivers.length || championshipTeams.length ? null : championshipDriversQuery.error || championshipTeamsQuery.error;
 
   const selectedEntry = classificationEntries.find((entry) => entry.driverNumber === selectedDriverNumber);
   const selectedDriver = selectedEntry?.driver || drivers.find((driver) => driver.driver_number === selectedDriverNumber);
@@ -1221,6 +1384,47 @@ function App() {
             </select>
           </label>
         </div>
+      </section>
+
+      <section className="championship-rack">
+        <section className="panel championship-panel">
+          <SectionHeading
+            title="Championnat pilotes"
+            detail="Classement total actualisé après la course du week-end."
+            loading={championshipLoading}
+          />
+          {championshipError ? <ErrorBanner message={championshipError} /> : null}
+          {championshipDrivers.length ? (
+            <StandingsTable
+              variant="drivers"
+              drivers={championshipDrivers}
+              onSelectDriver={handleSelectDriver}
+            />
+          ) : (
+            <EmptyState
+              title="Championnat pilotes indisponible"
+              copy="OpenF1 publie ce classement uniquement pour les sessions de course."
+              compact
+            />
+          )}
+        </section>
+        <section className="panel championship-panel">
+          <SectionHeading
+            title="Championnat constructeurs"
+            detail="Vue rapide des points équipes sur l’ensemble de la saison."
+            loading={championshipLoading}
+          />
+          {championshipError ? <ErrorBanner message={championshipError} /> : null}
+          {championshipTeams.length ? (
+            <StandingsTable variant="teams" teams={championshipTeams} />
+          ) : (
+            <EmptyState
+              title="Championnat constructeurs indisponible"
+              copy="Le classement constructeurs arrive après publication des données course."
+              compact
+            />
+          )}
+        </section>
       </section>
 
       <section className="tab-rack panel">
@@ -1490,6 +1694,68 @@ function MetricCard({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
+  );
+}
+
+function StandingsTable({
+  variant,
+  drivers = [],
+  teams = [],
+  onSelectDriver,
+}: {
+  variant: 'drivers' | 'teams';
+  drivers?: DriverStandingEntry[];
+  teams?: TeamStandingEntry[];
+  onSelectDriver?: (driverNumber: number) => void;
+}) {
+  const rows = variant === 'drivers' ? drivers : teams;
+
+  return (
+    <div className={`standings-table is-${variant}`}>
+      <div className="standings-head">
+        <span>Pos</span>
+        <span>+/-</span>
+        <span>{variant === 'drivers' ? 'Pilote' : 'Équipe'}</span>
+        <span>Pts</span>
+        <span>Delta</span>
+      </div>
+      <div className="standings-body">
+        {variant === 'drivers'
+          ? drivers.map((row) => (
+              <button
+                key={row.driverNumber}
+                type="button"
+                className="standing-row"
+                style={{ '--team-accent': row.accent } as CSSProperties}
+                onClick={() => onSelectDriver?.(row.driverNumber)}
+              >
+                <strong>P{row.position}</strong>
+                <PositionDelta value={row.positionDelta} />
+                <div className="standing-main">
+                  <DriverChip driver={row.driver} accent={row.accent} compact />
+                  <span className="standing-sub">{getTeamShortName(row.teamName)}</span>
+                </div>
+                <strong>{formatValue(row.points)}</strong>
+                <span className="standing-points-delta">{row.pointsDelta !== null ? `+${formatValue(row.pointsDelta)}` : 'n/d'}</span>
+              </button>
+            ))
+          : teams.map((row) => (
+              <div key={`${row.position}-${row.teamName}-${row.points}`} className="standing-row" style={{ '--team-accent': row.accent } as CSSProperties}>
+                <strong>P{row.position}</strong>
+                <PositionDelta value={row.positionDelta} />
+                <div className="standing-main is-team">
+                  <span className="chip-accent" />
+                  <div className="standing-team-copy">
+                    <strong>{getTeamShortName(row.teamName)}</strong>
+                    <span>{safeText(row.teamName)}</span>
+                  </div>
+                </div>
+                <strong>{formatValue(row.points)}</strong>
+                <span className="standing-points-delta">{row.pointsDelta !== null ? `+${formatValue(row.pointsDelta)}` : 'n/d'}</span>
+              </div>
+            ))}
+      </div>
+    </div>
   );
 }
 

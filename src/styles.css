@@ -174,6 +174,7 @@ button {
 }
 
 .control-rack,
+.championship-panel,
 .tab-rack,
 .classification-shell,
 .focus-panel,
@@ -185,6 +186,7 @@ button {
 }
 
 .control-rack,
+.championship-rack,
 .tab-rack,
 .main-grid,
 .tab-grid,
@@ -226,6 +228,12 @@ button {
   gap: 12px;
 }
 
+.championship-rack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .control-grid label,
 .window-row,
 .tab-list {
@@ -245,6 +253,98 @@ button {
 .tab-rack {
   display: grid;
   gap: 12px;
+}
+
+.standings-table {
+  margin-top: 14px;
+}
+
+.standings-head,
+.standing-row {
+  display: grid;
+  grid-template-columns: 50px 52px minmax(0, 1fr) 64px 72px;
+  gap: 10px;
+  align-items: center;
+}
+
+.standings-head {
+  padding: 0 12px 10px;
+  color: var(--f1-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.standings-body {
+  display: grid;
+  gap: 8px;
+  max-height: 352px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.standing-row {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--f1-line);
+  border-left: 4px solid var(--team-accent, var(--f1-red));
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  text-align: left;
+}
+
+button.standing-row {
+  cursor: pointer;
+}
+
+.standing-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.standing-main.is-team {
+  grid-template-columns: 5px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.standing-team-copy,
+.standing-sub {
+  min-width: 0;
+}
+
+.standing-team-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.standing-team-copy strong,
+.standing-points-delta,
+.standing-row > strong {
+  font-family: 'Teko', sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.standing-team-copy strong {
+  font-size: 1.15rem;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+.standing-sub,
+.standing-team-copy span {
+  color: var(--f1-muted);
+  font-size: 0.84rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.standing-points-delta {
+  color: var(--f1-yellow);
+  font-size: 1rem;
 }
 
 .tab-list {
@@ -901,6 +1001,7 @@ div.driver-avatar {
 
 @media (max-width: 1180px) {
   .broadcast-topbar,
+  .championship-rack,
   .tab-grid,
   .podium-grid {
     grid-template-columns: 1fr;
@@ -929,6 +1030,16 @@ div.driver-avatar {
   .tab-list,
   .control-grid {
     grid-template-columns: 1fr;
+  }
+
+  .standings-head,
+  .standing-row {
+    grid-template-columns: 46px 56px minmax(0, 1fr) 58px;
+  }
+
+  .standings-head span:last-child,
+  .standing-row > .standing-points-delta {
+    display: none;
   }
 
   .side-column {
