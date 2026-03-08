@@ -219,7 +219,7 @@ interface DriverStandingEntry {
   position: number;
   positionDelta: number | null;
   points: number;
-  pointsDelta: number | null;
+  leaderGap: number;
   driver: Driver | undefined;
   accent: string;
   teamName: string;
@@ -230,7 +230,7 @@ interface TeamStandingEntry {
   position: number;
   positionDelta: number | null;
   points: number;
-  pointsDelta: number | null;
+  leaderGap: number;
   accent: string;
 }
 
@@ -708,6 +708,14 @@ const getTeamShortName = (teamName?: string | null) => {
     .replace(/\s+F1 Team$/i, '')
     .replace(/^Aston Martin Aramco /i, 'Aston Martin ')
     .trim();
+};
+
+const formatLeaderGapPoints = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '--';
+  }
+
+  return `-${formatValue(value)}`;
 };
 
 const filterRowsByWindow = <T extends OpenF1Row>(rows: T[], session: Session | undefined, windowPreset: WindowPreset) => {
@@ -1194,50 +1202,55 @@ function App() {
   const weatherRows = useMemo(() => downsample(sortByDate(weatherQuery.data), 120), [weatherQuery.data]);
   const latestWeather = weatherRows[weatherRows.length - 1];
   const championshipDrivers = useMemo<DriverStandingEntry[]>(
-    () =>
-      [...championshipDriversQuery.data]
+    () => {
+      const rows = [...championshipDriversQuery.data]
         .sort((left, right) => Number(left.position_current ?? 999) - Number(right.position_current ?? 999))
         .map((row, index) => {
           const driver = driverLookup.get(Number(row.driver_number));
           const position = Number(row.position_current ?? index + 1);
           const positionStart = Number(row.position_start ?? 0);
           const points = toNumeric(row.points_current) ?? 0;
-          const pointsStart = toNumeric(row.points_start) ?? null;
           const teamName = getTeamName(undefined, driver);
           return {
             driverNumber: Number(row.driver_number),
             position,
             positionDelta: positionStart ? positionStart - position : null,
             points,
-            pointsDelta: pointsStart === null ? null : points - pointsStart,
+            leaderGap: 0,
             driver,
             accent: getTeamColor(undefined, driver),
             teamName,
           };
-        }),
+        });
+
+      const leaderPoints = rows[0]?.points ?? 0;
+      return rows.map((row) => ({ ...row, leaderGap: Math.max(0, leaderPoints - row.points) }));
+    },
     [championshipDriversQuery.data, driverLookup],
   );
   const championshipTeams = useMemo<TeamStandingEntry[]>(
     () => {
       const hasCompleteEndpointRows = championshipTeamsQuery.data.length && championshipTeamsQuery.data.every((row) => row.team_name);
       if (hasCompleteEndpointRows) {
-        return [...championshipTeamsQuery.data]
+        const rows = [...championshipTeamsQuery.data]
           .sort((left, right) => Number(left.position_current ?? 999) - Number(right.position_current ?? 999))
           .map((row, index) => {
             const position = Number(row.position_current ?? index + 1);
             const positionStart = Number(row.position_start ?? 0);
             const points = toNumeric(row.points_current) ?? 0;
-            const pointsStart = toNumeric(row.points_start) ?? null;
             const teamName = safeText(row.team_name, 'Équipe');
             return {
               teamName,
               position,
               positionDelta: positionStart ? positionStart - position : null,
               points,
-              pointsDelta: pointsStart === null ? null : points - pointsStart,
+              leaderGap: 0,
               accent: getTeamColor(teamName),
             };
           });
+
+        const leaderPoints = rows[0]?.points ?? 0;
+        return rows.map((row) => ({ ...row, leaderGap: Math.max(0, leaderPoints - row.points) }));
       }
 
       const teamMap = new Map<
@@ -1278,7 +1291,7 @@ function App() {
         position: index + 1,
         positionDelta: hasMeaningfulStartOrder ? (startIndex.get(row.teamName) ?? index + 1) - (index + 1) : null,
         points: row.points,
-        pointsDelta: row.pointsStart === null ? null : row.points - row.pointsStart,
+        leaderGap: Math.max(0, (currentRows[0]?.points ?? row.points) - row.points),
         accent: row.accent,
       }));
     },
@@ -1717,7 +1730,7 @@ function StandingsTable({
         <span>+/-</span>
         <span>{variant === 'drivers' ? 'Pilote' : 'Équipe'}</span>
         <span>Pts</span>
-        <span>Delta</span>
+        <span>Écart 1er</span>
       </div>
       <div className="standings-body">
         {variant === 'drivers'
@@ -1736,7 +1749,7 @@ function StandingsTable({
                   <span className="standing-sub">{getTeamShortName(row.teamName)}</span>
                 </div>
                 <strong>{formatValue(row.points)}</strong>
-                <span className="standing-points-delta">{row.pointsDelta !== null ? `+${formatValue(row.pointsDelta)}` : 'n/d'}</span>
+                <span className="standing-points-delta">{formatLeaderGapPoints(row.leaderGap)}</span>
               </button>
             ))
           : teams.map((row) => (
@@ -1751,7 +1764,7 @@ function StandingsTable({
                   </div>
                 </div>
                 <strong>{formatValue(row.points)}</strong>
-                <span className="standing-points-delta">{row.pointsDelta !== null ? `+${formatValue(row.pointsDelta)}` : 'n/d'}</span>
+                <span className="standing-points-delta">{formatLeaderGapPoints(row.leaderGap)}</span>
               </div>
             ))}
       </div>
