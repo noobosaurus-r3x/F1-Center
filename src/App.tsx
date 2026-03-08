@@ -209,9 +209,12 @@ interface EventFeedItem {
   tone: string;
   headline: string;
   body: string;
+  priority: number;
+  sourceType: 'race_control' | 'pit' | 'overtake';
   driverNumber?: number;
   sourceLabel?: string;
   lapLabel?: string;
+  badge?: string;
 }
 
 interface DriverStandingEntry {
@@ -242,6 +245,8 @@ const TABS: Array<{ key: TabKey; label: string; detail: string }> = [
 ];
 
 const WINDOW_OPTIONS: WindowPreset[] = ['full', '15m', '5m'];
+const LIVE_REFRESH_MS = 12000;
+const WEATHER_REFRESH_MS = 30000;
 const INTEGRATED_ENDPOINT_KEYS = [
   'meetings',
   'sessions',
@@ -349,6 +354,7 @@ function useEndpointData<T extends OpenF1Row>(
   path: string,
   params: Record<string, QueryValue>,
   enabled = true,
+  refreshMs = 0,
 ): QueryState<T> {
   const url = useMemo(() => (enabled ? buildEndpointUrl(path, params) : ''), [enabled, params, path]);
   const [state, setState] = useState<QueryState<T>>({ data: [], loading: false, error: null, url });
@@ -360,29 +366,47 @@ function useEndpointData<T extends OpenF1Row>(
     }
 
     let cancelled = false;
-    setState((current) => ({ ...current, loading: true, error: null, url }));
+    let intervalId: number | undefined;
 
-    fetchOpenF1<T>(url)
-      .then((data) => {
+    const load = async (showLoading: boolean) => {
+      if (showLoading) {
+        setState((current) => ({ ...current, loading: true, error: null, url }));
+      } else {
+        setState((current) => ({ ...current, error: null, url }));
+      }
+
+      try {
+        const data = await fetchOpenF1<T>(url, { force: refreshMs > 0 });
         if (!cancelled) {
           setState({ data, loading: false, error: null, url });
         }
-      })
-      .catch((error: unknown) => {
+      } catch (error: unknown) {
         if (!cancelled) {
-          setState({
-            data: [],
+          setState((current) => ({
+            data: showLoading ? [] : current.data,
             loading: false,
             error: error instanceof Error ? error.message : 'Requête impossible',
             url,
-          });
+          }));
         }
-      });
+      }
+    };
+
+    void load(true);
+
+    if (refreshMs > 0) {
+      intervalId = window.setInterval(() => {
+        void load(false);
+      }, refreshMs);
+    }
 
     return () => {
       cancelled = true;
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
     };
-  }, [enabled, url]);
+  }, [enabled, refreshMs, url]);
 
   return state;
 }
@@ -533,24 +557,36 @@ const getMeetingOptionLabel = (meeting: Meeting) => {
   return location ? `${getMeetingLabel(meeting)} · ${location} · ${dateRange}` : `${getMeetingLabel(meeting)} · ${dateRange}`;
 };
 
-const getSessionState = (session: Session | undefined) => {
+const getSessionPhase = (session: Session | undefined, now = Date.now()) => {
   if (!session?.date_start || !session?.date_end) {
-    return 'Contexte chargé';
+    return 'unknown';
   }
 
-  const now = Date.now();
   const start = parseOpenF1Date(session.date_start);
   const end = parseOpenF1Date(session.date_end);
 
   if (now < start) {
-    return 'Session à venir';
+    return 'upcoming';
   }
 
   if (now > end) {
-    return 'Session terminée';
+    return 'ended';
   }
 
-  return 'Session en cours';
+  return 'live';
+};
+
+const getSessionState = (session: Session | undefined, now = Date.now()) => {
+  switch (getSessionPhase(session, now)) {
+    case 'upcoming':
+      return 'Session à venir';
+    case 'ended':
+      return 'Session terminée';
+    case 'live':
+      return 'Session en cours';
+    default:
+      return 'Contexte chargé';
+  }
 };
 
 const toTimeLabel = (value?: string | null) => {
@@ -672,28 +708,119 @@ const getStatusLabel = (row: SessionResult | undefined) => {
   return status?.label ?? null;
 };
 
-const getEventTone = (row: RaceControlMessage) => {
-  const raw = `${row.flag || ''} ${row.category || ''} ${row.message || ''}`.toLowerCase();
-  if (/red|black|danger|abandon|unsafe/.test(raw)) {
+const getEventToneByPriority = (priority: number) => {
+  if (priority >= 90) {
     return 'is-alert';
   }
-  if (/yellow|safety|investigation|incident|track limits/.test(raw)) {
+  if (priority >= 70) {
     return 'is-warn';
   }
-  if (/green|clear|drs enabled/.test(raw)) {
+  if (priority >= 45) {
     return 'is-ok';
   }
   return 'is-neutral';
 };
 
-const getEventHeading = (row: RaceControlMessage) => {
-  const main = row.flag || row.category || 'Direction de course';
-  return row.driver_number ? `${main} · #${row.driver_number}` : String(main);
+const getRaceControlRawText = (row: RaceControlMessage) =>
+  `${row.flag || ''} ${row.category || ''} ${row.message || ''}`.toLowerCase();
+
+const isNoiseRaceControlMessage = (row: RaceControlMessage) => {
+  const raw = getRaceControlRawText(row);
+  return (
+    /blue flag/.test(raw) ||
+    /clear in track sector/.test(raw) ||
+    /track clear/.test(raw) ||
+    /all pass holders/.test(raw) ||
+    /drs (enabled|disabled)/.test(raw) ||
+    /lap time deleted/.test(raw) ||
+    /time .* deleted/.test(raw) ||
+    /practice start/.test(raw) ||
+    /pit exit open/.test(raw) ||
+    /pit exit closed/.test(raw) ||
+    /black and white flag/.test(raw) ||
+    /session finished/.test(raw) ||
+    /session started/.test(raw)
+  );
 };
 
-const isMinorRaceControlMessage = (row: RaceControlMessage) => {
-  const raw = `${row.flag || ''} ${row.category || ''} ${row.message || ''}`.toLowerCase();
-  return /blue/.test(raw) || /clear in track sector/.test(raw) || /all pass holders/.test(raw);
+const getRaceControlPriority = (row: RaceControlMessage) => {
+  const raw = getRaceControlRawText(row);
+
+  if (/\bred flag\b|session stopped/.test(raw)) {
+    return 100;
+  }
+  if (/chequered/.test(raw)) {
+    return 66;
+  }
+  if (/vsc deployed|virtual safety car deployed|sc deployed|safety car deployed/.test(raw)) {
+    return 96;
+  }
+  if (/retired|has stopped|stopped on track|abandon|medical car/.test(raw)) {
+    return 94;
+  }
+  if (/disqualified|\bblack flag\b|stop\/go|drive through|penalty/.test(raw)) {
+    return 92;
+  }
+  if (/investigation|noted|summoned|unsafe release/.test(raw)) {
+    return 84;
+  }
+  if (/double yellow|yellow flag|\byellow\b|incident/.test(raw)) {
+    return 76;
+  }
+  if (/green flag|restart|resumed|safety car in this lap|virtual safety car ending|vsc ending|sc in this lap/.test(raw)) {
+    return 58;
+  }
+  if (/safetycar|\bvsc\b|\bsc\b|\bvirtual safety car\b|\bsafety car\b/.test(raw)) {
+    return 74;
+  }
+  return 42;
+};
+
+const getRaceControlHeading = (row: RaceControlMessage) => {
+  const raw = getRaceControlRawText(row);
+
+  if (/chequered/.test(raw)) {
+    return 'Drapeau à damier';
+  }
+  if (/\bred flag\b|session stopped/.test(raw)) {
+    return 'Drapeau rouge';
+  }
+  if (/virtual safety car ending|vsc ending/.test(raw)) {
+    return 'Fin du VSC';
+  }
+  if (/safety car in this lap|sc in this lap/.test(raw)) {
+    return 'Fin du Safety Car';
+  }
+  if (/virtual safety car deployed|\bvirtual safety car\b|\bvsc\b/.test(raw)) {
+    return 'Virtual Safety Car';
+  }
+  if (/\bsafety car\b|safetycar|\bsc\b/.test(raw)) {
+    return 'Safety Car';
+  }
+  if (/retired|abandon/.test(raw)) {
+    return row.driver_number ? `Abandon · #${row.driver_number}` : 'Abandon';
+  }
+  if (/has stopped|stopped on track/.test(raw)) {
+    return row.driver_number ? `Voiture arrêtée · #${row.driver_number}` : 'Voiture arrêtée';
+  }
+  if (/disqualified/.test(raw)) {
+    return row.driver_number ? `Disqualification · #${row.driver_number}` : 'Disqualification';
+  }
+  if (/penalty|drive through|stop\/go/.test(raw)) {
+    return row.driver_number ? `Pénalité · #${row.driver_number}` : 'Pénalité';
+  }
+  if (/investigation|noted|summoned/.test(raw)) {
+    return row.driver_number ? `Investigation · #${row.driver_number}` : 'Investigation';
+  }
+  if (/double yellow|yellow flag|\byellow\b/.test(raw)) {
+    return 'Drapeau jaune';
+  }
+  if (/green flag|restart|resumed/.test(raw)) {
+    return 'Relance';
+  }
+
+  const main = row.flag || row.category || 'Direction de course';
+  return row.driver_number ? `${main} · #${row.driver_number}` : String(main);
 };
 
 const getTeamShortName = (teamName?: string | null) => {
@@ -794,6 +921,17 @@ function App() {
   const [selectedDriverNumber, setSelectedDriverNumber] = useState<number | null>(null);
   const [hasManualDriverSelection, setHasManualDriverSelection] = useState(false);
   const [windowPreset, setWindowPreset] = useState<WindowPreset>('15m');
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 15000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const latestMeetingQuery = useEndpointData<Meeting>('meetings', { meeting_key: 'latest' }, true);
   const meetingsQuery = useEndpointData<Meeting>('meetings', { year: selectedYear }, true);
@@ -874,6 +1012,13 @@ function App() {
 
   const selectedMeeting = meetings.find((meeting) => meeting.meeting_key === selectedMeetingKey) ?? latestMeetingQuery.data[0];
   const selectedSession = sessions.find((session) => session.session_key === selectedSessionKey);
+  const sessionPhase = getSessionPhase(selectedSession, nowMs);
+  const isSessionLive = sessionPhase === 'live';
+  const isRaceSessionSelected =
+    selectedSession?.session_type?.toLowerCase() === 'race' || selectedSession?.session_name?.toLowerCase() === 'race';
+  const isLiveRaceSession = isSessionLive && Boolean(isRaceSessionSelected);
+  const liveRefreshMs = isSessionLive ? LIVE_REFRESH_MS : 0;
+  const weatherRefreshMs = isSessionLive ? WEATHER_REFRESH_MS : 0;
   const raceSessionKey = useMemo(() => {
     const raceSession = sessions.find(
       (session) => session.session_type?.toLowerCase() === 'race' || session.session_name?.toLowerCase() === 'race',
@@ -902,36 +1047,61 @@ function App() {
     'session_result',
     selectedSessionKey ? { session_key: selectedSessionKey } : {},
     Boolean(selectedSessionKey),
+    liveRefreshMs,
   );
   const startingGridQuery = useEndpointData<StartingGridRow>(
     'starting_grid',
     startingGridSessionKey ? { session_key: startingGridSessionKey } : {},
     Boolean(startingGridSessionKey),
   );
-  const lapsQuery = useEndpointData<LapRow>('laps', selectedSessionKey ? { session_key: selectedSessionKey } : {}, Boolean(selectedSessionKey));
-  const stintsQuery = useEndpointData<StintRow>('stints', selectedSessionKey ? { session_key: selectedSessionKey } : {}, Boolean(selectedSessionKey));
-  const intervalsQuery = useEndpointData<IntervalRow>('intervals', selectedSessionKey ? { session_key: selectedSessionKey } : {}, Boolean(selectedSessionKey));
-  const positionQuery = useEndpointData<PositionRow>('position', selectedSessionKey ? { session_key: selectedSessionKey } : {}, Boolean(selectedSessionKey));
+  const lapsQuery = useEndpointData<LapRow>(
+    'laps',
+    selectedSessionKey ? { session_key: selectedSessionKey } : {},
+    Boolean(selectedSessionKey),
+    liveRefreshMs,
+  );
+  const stintsQuery = useEndpointData<StintRow>(
+    'stints',
+    selectedSessionKey ? { session_key: selectedSessionKey } : {},
+    Boolean(selectedSessionKey),
+    liveRefreshMs,
+  );
+  const intervalsQuery = useEndpointData<IntervalRow>(
+    'intervals',
+    selectedSessionKey ? { session_key: selectedSessionKey } : {},
+    Boolean(selectedSessionKey),
+    liveRefreshMs,
+  );
+  const positionQuery = useEndpointData<PositionRow>(
+    'position',
+    selectedSessionKey ? { session_key: selectedSessionKey } : {},
+    Boolean(selectedSessionKey),
+    liveRefreshMs,
+  );
 
   const raceControlQuery = useEndpointData<RaceControlMessage>(
     'race_control',
     selectedSessionKey ? { session_key: selectedSessionKey } : {},
-    activeTab === 'events' && Boolean(selectedSessionKey),
+    (activeTab === 'events' || isLiveRaceSession) && Boolean(selectedSessionKey),
+    liveRefreshMs,
   );
   const pitQuery = useEndpointData<PitRow>(
     'pit',
     selectedSessionKey ? { session_key: selectedSessionKey } : {},
     activeTab === 'events' && Boolean(selectedSessionKey),
+    liveRefreshMs,
   );
   const overtakesQuery = useEndpointData<OvertakeRow>(
     'overtakes',
     selectedSessionKey ? { session_key: selectedSessionKey } : {},
     activeTab === 'events' && Boolean(selectedSessionKey),
+    liveRefreshMs,
   );
   const weatherQuery = useEndpointData<WeatherSample>(
     'weather',
     selectedMeetingKey ? { meeting_key: selectedMeetingKey } : {},
     activeTab === 'weather' && Boolean(selectedMeetingKey),
+    weatherRefreshMs,
   );
   const championshipDriversQuery = useEndpointData<ChampionshipDriverRow>(
     'championship_drivers',
@@ -1071,6 +1241,10 @@ function App() {
     latestStintByDriver,
     sessionResultQuery.data,
   ]);
+  const currentPositionByDriver = useMemo(
+    () => new Map(classificationEntries.map((entry) => [entry.driverNumber, entry.position])),
+    [classificationEntries],
+  );
 
   useEffect(() => {
     if (classificationEntries.length) {
@@ -1101,6 +1275,7 @@ function App() {
       ? { session_key: selectedSessionKey, driver_number: telemetryPrimaryNumber }
       : {},
     activeTab === 'telemetry' && Boolean(selectedSessionKey && telemetryPrimaryNumber),
+    liveRefreshMs,
   );
   const telemetrySecondaryQuery = useEndpointData<CarDataSample>(
     'car_data',
@@ -1108,6 +1283,7 @@ function App() {
       ? { session_key: selectedSessionKey, driver_number: telemetrySecondaryNumber }
       : {},
     activeTab === 'telemetry' && Boolean(selectedSessionKey && telemetrySecondaryNumber),
+    liveRefreshMs,
   );
   const telemetryLocationQuery = useEndpointData<LocationSample>(
     'location',
@@ -1115,6 +1291,7 @@ function App() {
       ? { session_key: selectedSessionKey, driver_number: telemetryPrimaryNumber }
       : {},
     activeTab === 'telemetry' && Boolean(selectedSessionKey && telemetryPrimaryNumber),
+    liveRefreshMs,
   );
 
   const telemetryLocationRows = downsample(
@@ -1142,63 +1319,165 @@ function App() {
   const primaryAvgBrake = average(primaryBrake) ?? 0;
   const primaryAvgRpm = average(primaryRpm) ?? 0;
 
-  const eventRows = useMemo<EventFeedItem[]>(() => {
-    const raceControlRows = raceControlQuery.data
-      .filter((row) => !isMinorRaceControlMessage(row))
-      .map((row, index) => ({
-        id: `rc-${index}-${row.date}`,
-        date: row.date,
-        tone: getEventTone(row),
-        headline: getEventHeading(row),
-        body: safeText(row.message, 'Message non détaillé'),
-        driverNumber: row.driver_number ? Number(row.driver_number) : undefined,
-        sourceLabel: row.driver_number ? undefined : 'Race Control',
-        lapLabel: row.lap_number ? `Tour ${row.lap_number}` : 'Session',
-      }));
+  const raceControlRows = useMemo<EventFeedItem[]>(
+    () =>
+      raceControlQuery.data
+        .filter((row) => !isNoiseRaceControlMessage(row))
+        .map((row, index) => {
+          const priority = getRaceControlPriority(row);
+          return {
+            id: `rc-${index}-${row.date}`,
+            date: row.date,
+            tone: getEventToneByPriority(priority),
+            headline: getRaceControlHeading(row),
+            body: safeText(row.message, 'Message non détaillé'),
+            priority,
+            sourceType: 'race_control',
+            driverNumber: row.driver_number ? Number(row.driver_number) : undefined,
+            sourceLabel: row.driver_number ? undefined : 'Race Control',
+            lapLabel: row.lap_number ? `Tour ${row.lap_number}` : 'Session',
+            badge: row.flag || row.category || 'RC',
+          };
+        }),
+    [raceControlQuery.data],
+  );
 
-    const pitRows = pitQuery.data.map((row, index) => {
-      const stop = toNumeric(row.stop_duration);
-      const lane = toNumeric(row.lane_duration);
-      const details = [
-        stop !== null && stop < 180 ? `Arrêt ${formatDurationSeconds(stop)}` : null,
-        lane !== null && lane < 180 ? `Voie ${formatDurationSeconds(lane)}` : null,
-      ]
-        .filter(Boolean)
-        .join(' · ');
+  const pitRows = useMemo<EventFeedItem[]>(
+    () =>
+      pitQuery.data.flatMap((row, index) => {
+        const stop = toNumeric(row.stop_duration);
+        const lane = toNumeric(row.lane_duration);
+        const currentPosition = currentPositionByDriver.get(row.driver_number) ?? 99;
+        const isFocusDriver = selectedDriverNumber === row.driver_number;
+        const isSlowStop = (stop ?? 0) >= 4.5;
+        const isLongLane = (lane ?? 0) >= 24;
+        const isNotable = isFocusDriver || currentPosition <= 5 || isSlowStop || isLongLane;
 
-      return {
-        id: `pit-${index}-${row.date}-${row.driver_number}`,
-        date: row.date,
-        tone: 'is-warn',
-        headline: 'Passage aux stands',
-        body: details || 'Passage stand / garage',
-        driverNumber: row.driver_number,
-        lapLabel: row.lap_number ? `Tour ${row.lap_number}` : 'Stand',
-      };
-    });
+        if (!isNotable) {
+          return [];
+        }
 
-    const overtakeRows = overtakesQuery.data.map((row, index) => {
-      const attacker = row.overtaking_driver_number ? driverLookup.get(Number(row.overtaking_driver_number)) : undefined;
-      const defender = row.overtaken_driver_number ? driverLookup.get(Number(row.overtaken_driver_number)) : undefined;
-      const attackerCode = attacker ? getDriverCode(attacker) : `#${safeText(row.overtaking_driver_number)}`;
-      const defenderCode = defender ? getDriverCode(defender) : `#${safeText(row.overtaken_driver_number)}`;
+        const details = [
+          stop !== null && stop < 180 ? `Arrêt ${formatDurationSeconds(stop)}` : null,
+          lane !== null && lane < 180 ? `Voie ${formatDurationSeconds(lane)}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        const priority = isFocusDriver ? 72 : currentPosition <= 3 ? 68 : isSlowStop || isLongLane ? 62 : 54;
 
-      return {
-        id: `ot-${index}-${row.date}`,
-        date: row.date,
-        tone: 'is-ok',
-        headline: 'Dépassement',
-        body: `${attackerCode} passe ${defenderCode}${row.position ? ` pour P${row.position}` : ''}`,
-        driverNumber: row.overtaking_driver_number ? Number(row.overtaking_driver_number) : undefined,
-        sourceLabel: row.overtaking_driver_number ? undefined : 'Piste',
-        lapLabel: row.position ? `P${row.position}` : 'Position',
-      };
-    });
+        return [
+          {
+            id: `pit-${index}-${row.date}-${row.driver_number}`,
+            date: row.date,
+            tone: getEventToneByPriority(priority),
+            headline: isSlowStop ? 'Arrêt lent aux stands' : 'Passage aux stands',
+            body: details || 'Passage stand / garage',
+            priority,
+            sourceType: 'pit',
+            driverNumber: row.driver_number,
+            lapLabel: row.lap_number ? `Tour ${row.lap_number}` : 'Stand',
+            badge: 'Stand',
+          },
+        ];
+      }),
+    [currentPositionByDriver, pitQuery.data, selectedDriverNumber],
+  );
 
-    return [...raceControlRows, ...pitRows, ...overtakeRows]
+  const overtakeRows = useMemo<EventFeedItem[]>(
+    () => {
+      const seen = new Set<string>();
+
+      return sortByDate(overtakesQuery.data).flatMap((row, index) => {
+        const attackerNumber = row.overtaking_driver_number ? Number(row.overtaking_driver_number) : null;
+        const defenderNumber = row.overtaken_driver_number ? Number(row.overtaken_driver_number) : null;
+        const position = Number(row.position ?? 0) || null;
+        const minuteBucket = Math.floor(parseOpenF1Date(row.date) / 60000);
+        const signature = `${attackerNumber}-${defenderNumber}-${position ?? 'x'}-${minuteBucket}`;
+
+        if (seen.has(signature)) {
+          return [];
+        }
+        seen.add(signature);
+
+        const involvesFocusDriver = attackerNumber === selectedDriverNumber || defenderNumber === selectedDriverNumber;
+        const isNotable = involvesFocusDriver || Boolean(position && position <= 10);
+        if (!isNotable) {
+          return [];
+        }
+
+        const attacker = attackerNumber ? driverLookup.get(attackerNumber) : undefined;
+        const defender = defenderNumber ? driverLookup.get(defenderNumber) : undefined;
+        const attackerCode = attacker ? getDriverCode(attacker) : `#${safeText(row.overtaking_driver_number)}`;
+        const defenderCode = defender ? getDriverCode(defender) : `#${safeText(row.overtaken_driver_number)}`;
+
+        let priority = involvesFocusDriver ? 68 : 58;
+        let headline = 'Dépassement';
+        let badge = 'Piste';
+
+        if (position === 1) {
+          priority = 96;
+          headline = 'Changement de leader';
+          badge = 'P1';
+        } else if (position && position <= 3) {
+          priority = 82;
+          headline = 'Dépassement pour le podium';
+          badge = `P${position}`;
+        } else if (position && position <= 10) {
+          priority = 74;
+          headline = 'Dépassement dans les points';
+          badge = `P${position}`;
+        } else if (involvesFocusDriver) {
+          priority = 68;
+          headline = 'Duel du pilote suivi';
+          badge = 'Focus';
+        }
+
+        return [
+          {
+            id: `ot-${index}-${row.date}`,
+            date: row.date,
+            tone: getEventToneByPriority(priority),
+            headline,
+            body: `${attackerCode} passe ${defenderCode}${position ? ` pour P${position}` : ''}`,
+            priority,
+            sourceType: 'overtake',
+            driverNumber: attackerNumber ?? undefined,
+            sourceLabel: attackerNumber ? undefined : 'Piste',
+            lapLabel: position ? `P${position}` : 'Position',
+            badge,
+          },
+        ];
+      });
+    },
+    [driverLookup, overtakesQuery.data, selectedDriverNumber],
+  );
+
+  const eventRows = useMemo<EventFeedItem[]>(
+    () =>
+      [...raceControlRows, ...pitRows, ...overtakeRows]
+        .sort((left, right) => parseOpenF1Date(right.date) - parseOpenF1Date(left.date))
+        .slice(0, 20),
+    [overtakeRows, pitRows, raceControlRows],
+  );
+  const featuredEventRows = useMemo<EventFeedItem[]>(
+    () =>
+      [...eventRows]
+        .filter((row) => row.priority >= 70)
+        .sort(
+          (left, right) =>
+            right.priority - left.priority || parseOpenF1Date(right.date) - parseOpenF1Date(left.date),
+        )
+        .slice(0, 4),
+    [eventRows],
+  );
+  const tickerRows = useMemo<EventFeedItem[]>(() => {
+    const highPriority = raceControlRows.filter((row) => row.priority >= 70);
+    const candidateRows = highPriority.length ? highPriority : raceControlRows.filter((row) => row.priority >= 58);
+
+    return [...candidateRows]
       .sort((left, right) => parseOpenF1Date(right.date) - parseOpenF1Date(left.date))
-      .slice(0, 18);
-  }, [driverLookup, overtakesQuery.data, pitQuery.data, raceControlQuery.data]);
+      .slice(0, 5);
+  }, [raceControlRows]);
   const weatherRows = useMemo(() => downsample(sortByDate(weatherQuery.data), 120), [weatherQuery.data]);
   const latestWeather = weatherRows[weatherRows.length - 1];
   const championshipDrivers = useMemo<DriverStandingEntry[]>(
@@ -1329,9 +1608,41 @@ function App() {
 
   return (
     <div className="app-shell">
+      {isLiveRaceSession ? (
+        <section className="live-strip panel" aria-label="Race Control en direct">
+          <div className="live-strip-head">
+            <strong>Race Control</strong>
+            <span>Live · auto-refresh {Math.round(LIVE_REFRESH_MS / 1000)}s</span>
+          </div>
+          <div className="live-strip-track">
+            {tickerRows.length ? (
+              tickerRows.map((row) => (
+                <article key={row.id} className={`live-chip ${row.tone}`}>
+                  <span className="live-chip-badge">{row.badge || 'RC'}</span>
+                  <strong>{row.headline}</strong>
+                  <span>{row.body}</span>
+                  <small>{row.lapLabel || formatDateTime(row.date)}</small>
+                </article>
+              ))
+            ) : (
+              <article className="live-chip is-neutral">
+                <span className="live-chip-badge">RC</span>
+                <strong>Race Control en écoute</strong>
+                <span>Aucune alerte prioritaire pour l’instant. Le flux sera mis à jour automatiquement.</span>
+                <small>Session live</small>
+              </article>
+            )}
+          </div>
+        </section>
+      ) : null}
+
       <div className="broadcast-topbar">
         <div className="brand-block">
           <h1>F1 Center</h1>
+          <div className="hero-status-row">
+            <span className={`session-state-pill ${isSessionLive ? 'is-live' : ''}`}>{getSessionState(selectedSession, nowMs)}</span>
+            {isSessionLive ? <span className="session-state-pill is-refresh">Auto-refresh {Math.round(LIVE_REFRESH_MS / 1000)}s</span> : null}
+          </div>
           <p className="hero-subline">
             {getMeetingLabel(selectedMeeting)} · {formatMeetingDateRange(selectedMeeting)} · {getSessionLabel(selectedSession?.session_name)}
           </p>
@@ -1347,7 +1658,7 @@ function App() {
           </div>
           <div className="hero-meta-row">
             <span>Session</span>
-            <strong>{getSessionLabel(selectedSession?.session_name)} · {getSessionState(selectedSession)}</strong>
+            <strong>{getSessionLabel(selectedSession?.session_name)} · {getSessionState(selectedSession, nowMs)}</strong>
           </div>
           <div className="hero-meta-row">
             <span>Lieu / horaire</span>
@@ -1606,10 +1917,22 @@ function App() {
 
       {activeTab === 'events' && (
         <main className="tab-grid events-grid">
+          {featuredEventRows.length ? (
+            <section className="event-highlight-row">
+              {featuredEventRows.map((row) => (
+                <article key={`featured-${row.id}`} className={`panel event-highlight ${row.tone}`}>
+                  <span className="event-highlight-badge">{row.badge || row.sourceLabel || 'Live'}</span>
+                  <strong>{row.headline}</strong>
+                  <p>{row.body}</p>
+                  <small>{row.lapLabel || formatDateTime(row.date)}</small>
+                </article>
+              ))}
+            </section>
+          ) : null}
           <section className="panel wide-panel">
             <SectionHeading
               title="Événements de course"
-              detail="Direction de course, stands et dépassements sur une seule timeline."
+              detail="Timeline filtrée: safety car, abandons, pénalités, stands utiles et dépassements marquants."
               loading={raceControlQuery.loading || pitQuery.loading || overtakesQuery.loading}
             />
             {raceControlQuery.error || pitQuery.error || overtakesQuery.error ? (
@@ -1621,11 +1944,14 @@ function App() {
                   const driver = row.driverNumber ? driverLookup.get(Number(row.driverNumber)) : undefined;
                   return (
                     <article key={`${row.id}-${index}`} className={`event-row ${row.tone}`}>
-                      {driver ? (
-                        <DriverChip driver={driver} accent={getTeamColor(undefined, driver)} compact />
-                      ) : (
-                        <span className="event-source">{row.sourceLabel || 'Session'}</span>
-                      )}
+                      <div className="event-source-stack">
+                        <span className="event-badge">{row.badge || row.sourceLabel || 'Live'}</span>
+                        {driver ? (
+                          <DriverChip driver={driver} accent={getTeamColor(undefined, driver)} compact />
+                        ) : (
+                          <span className="event-source">{row.sourceLabel || 'Session'}</span>
+                        )}
+                      </div>
                       <div className="event-copy">
                         <strong>{row.headline}</strong>
                         <p>{row.body}</p>
@@ -1683,7 +2009,14 @@ function App() {
 
       <footer className="status-strip">
         <span>{getMeetingLabel(selectedMeeting)} · {getSessionLabel(selectedSession?.session_name)}</span>
-        <span>{meetingsQuery.error || sessionsQuery.error || driversQuery.error || `${INTEGRATED_ENDPOINT_KEYS.length} endpoints OpenF1 intégrés`}</span>
+        <span>
+          {meetingsQuery.error ||
+            sessionsQuery.error ||
+            driversQuery.error ||
+            (isSessionLive
+              ? `Live auto-refresh ${Math.round(LIVE_REFRESH_MS / 1000)}s · ${INTEGRATED_ENDPOINT_KEYS.length} endpoints OpenF1 intégrés`
+              : `${INTEGRATED_ENDPOINT_KEYS.length} endpoints OpenF1 intégrés`)}
+        </span>
       </footer>
     </div>
   );

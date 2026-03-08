@@ -86,6 +86,99 @@ button {
   padding: 14px 0 22px;
 }
 
+.live-strip {
+  position: sticky;
+  top: 10px;
+  z-index: 40;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  backdrop-filter: blur(18px);
+}
+
+.live-strip-head,
+.hero-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.live-strip-head strong,
+.live-chip strong,
+.event-highlight strong,
+.event-badge,
+.live-chip-badge,
+.session-state-pill {
+  font-family: 'Teko', sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.live-strip-head span {
+  color: var(--f1-muted);
+}
+
+.live-strip-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(260px, 1fr);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.live-chip {
+  display: grid;
+  gap: 4px;
+  min-height: 94px;
+  padding: 12px 14px;
+  border: 1px solid var(--f1-line);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+}
+
+.live-chip span,
+.live-chip small,
+.event-highlight p,
+.event-highlight small {
+  color: var(--f1-muted);
+}
+
+.live-chip-badge,
+.event-highlight-badge,
+.event-badge,
+.session-state-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.session-state-pill {
+  min-height: 32px;
+  font-size: 1rem;
+}
+
+.session-state-pill.is-live {
+  color: var(--f1-green);
+  border-color: rgba(0, 210, 106, 0.32);
+  background: rgba(0, 210, 106, 0.08);
+}
+
+.session-state-pill.is-refresh {
+  color: var(--f1-yellow);
+  border-color: rgba(255, 216, 77, 0.3);
+  background: rgba(255, 216, 77, 0.08);
+}
+
 .panel {
   border: 1px solid var(--f1-line);
   border-radius: 24px;
@@ -834,6 +927,19 @@ div.driver-avatar {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.event-highlight-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.event-highlight {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-width: 1px;
+}
+
 .plot-shell,
 .track-shell {
   display: grid;
@@ -903,6 +1009,12 @@ div.driver-avatar {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.event-source-stack {
+  display: grid;
+  gap: 10px;
+  align-items: start;
+}
+
 .event-copy,
 .event-meta {
   display: grid;
@@ -925,6 +1037,11 @@ div.driver-avatar {
   color: var(--f1-muted);
 }
 
+.event-badge {
+  min-height: 30px;
+  font-size: 1rem;
+}
+
 .event-row.is-alert {
   border-color: rgba(255, 77, 77, 0.26);
 }
@@ -935,6 +1052,24 @@ div.driver-avatar {
 
 .event-row.is-ok {
   border-color: rgba(0, 210, 106, 0.2);
+}
+
+.event-highlight.is-alert,
+.live-chip.is-alert {
+  border-color: rgba(255, 77, 77, 0.34);
+  background: linear-gradient(180deg, rgba(255, 77, 77, 0.14), rgba(255, 255, 255, 0.03));
+}
+
+.event-highlight.is-warn,
+.live-chip.is-warn {
+  border-color: rgba(255, 216, 77, 0.28);
+  background: linear-gradient(180deg, rgba(255, 216, 77, 0.1), rgba(255, 255, 255, 0.03));
+}
+
+.event-highlight.is-ok,
+.live-chip.is-ok {
+  border-color: rgba(0, 210, 106, 0.24);
+  background: linear-gradient(180deg, rgba(0, 210, 106, 0.08), rgba(255, 255, 255, 0.03));
 }
 
 .loading-pill {
@@ -1003,12 +1138,17 @@ div.driver-avatar {
   .broadcast-topbar,
   .championship-rack,
   .tab-grid,
-  .podium-grid {
+  .podium-grid,
+  .event-highlight-row {
     grid-template-columns: 1fr;
   }
 
   .hero-meta {
     grid-template-columns: 1fr;
+  }
+
+  .live-strip-track {
+    grid-auto-columns: minmax(220px, 1fr);
   }
 
   .event-row {
@@ -1025,6 +1165,10 @@ div.driver-avatar {
   .app-shell {
     width: min(100vw - 16px, 100%);
     padding-top: 14px;
+  }
+
+  .live-strip {
+    top: 6px;
   }
 
   .tab-list,
@@ -1099,6 +1243,11 @@ div.driver-avatar {
 
   .window-row {
     grid-auto-flow: row;
+  }
+
+  .live-strip-track {
+    grid-auto-flow: row;
+    grid-auto-columns: minmax(0, 1fr);
   }
 }
 

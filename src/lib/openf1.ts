@@ -98,7 +98,18 @@ const scheduleRequest = async <T>(task: () => Promise<T>) => {
   return queuedTask;
 };
 
-export async function fetchOpenF1<T extends Record<string, unknown>>(url: string): Promise<T[]> {
+interface FetchOpenF1Options {
+  force?: boolean;
+}
+
+export async function fetchOpenF1<T extends Record<string, unknown>>(
+  url: string,
+  options: FetchOpenF1Options = {},
+): Promise<T[]> {
+  if (options.force) {
+    responseCache.delete(url);
+  }
+
   if (responseCache.has(url)) {
     return responseCache.get(url) as Promise<T[]>;
   }
