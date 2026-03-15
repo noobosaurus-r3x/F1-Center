@@ -167,6 +167,18 @@ button {
   font-size: 1rem;
 }
 
+.fallback-banner {
+  margin-top: 14px;
+  max-width: 56rem;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 196, 0, 0.28);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 196, 0, 0.12), rgba(255, 196, 0, 0.06));
+  color: #ffe7a6;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
 .session-state-pill.is-live {
   color: var(--f1-green);
   border-color: rgba(0, 210, 106, 0.32);

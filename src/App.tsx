@@ -274,6 +274,7 @@ const TABS: Array<{ key: TabKey; label: string; detail: string }> = [
 const WINDOW_OPTIONS: WindowPreset[] = ['full', '15m', '5m'];
 const LIVE_REFRESH_MS = 12000;
 const WEATHER_REFRESH_MS = 30000;
+const FREE_TIER_DELAY_MS = 30 * 60 * 1000;
 const INTEGRATED_ENDPOINT_KEYS = [
   'meetings',
   'sessions',
@@ -619,6 +620,31 @@ const getSessionPhase = (session: Session | undefined, now = Date.now()) => {
   }
 
   return 'live';
+};
+
+const isFreelyAccessibleSession = (session?: Session | null, now = Date.now()) => {
+  if (!session?.date_end) {
+    return false;
+  }
+
+  const end = parseOpenF1Date(session.date_end);
+  if (Number.isNaN(end)) {
+    return false;
+  }
+
+  return now > end + FREE_TIER_DELAY_MS;
+};
+
+const getPreferredSession = (sessions: Session[], now = Date.now()) => {
+  const accessibleSessions = sessions.filter((session) => isFreelyAccessibleSession(session, now));
+  const candidateSessions = accessibleSessions.length ? accessibleSessions : sessions;
+
+  return (
+    [...candidateSessions].reverse().find((session) => isGrandPrixRaceSession(session)) ||
+    [...candidateSessions].reverse().find((session) => isRaceSession(session)) ||
+    candidateSessions[candidateSessions.length - 1] ||
+    null
+  );
 };
 
 const getSessionState = (session: Session | undefined, now = Date.now()) => {
@@ -978,7 +1004,6 @@ function App() {
     };
   }, []);
 
-  const latestMeetingQuery = useEndpointData<Meeting>('meetings', { meeting_key: 'latest' }, true);
   const meetingsQuery = useEndpointData<Meeting>('meetings', { year: selectedYear }, true);
   const seasonSessionsQuery = useEndpointData<Session>('sessions', { year: selectedYear }, true);
   const meetings = useMemo(
@@ -988,6 +1013,14 @@ function App() {
           parseOpenF1Date(String(right.date_start ?? '')) - parseOpenF1Date(String(left.date_start ?? '')),
       ),
     [meetingsQuery.data],
+  );
+  const seasonSessions = useMemo(
+    () =>
+      [...seasonSessionsQuery.data].sort(
+        (left, right) =>
+          parseOpenF1Date(String(left.date_start ?? '')) - parseOpenF1Date(String(right.date_start ?? '')),
+      ),
+    [seasonSessionsQuery.data],
   );
 
   useEffect(() => {
@@ -999,16 +1032,15 @@ function App() {
       return;
     }
 
-    const latest = latestMeetingQuery.data[0];
-    const preferred =
-      latest && latest.year === selectedYear
-        ? meetings.find((meeting) => meeting.meeting_key === latest.meeting_key)
-        : meetings[0];
+    const accessibleMeetingKeys = new Set(
+      seasonSessions.filter((session) => isFreelyAccessibleSession(session, nowMs)).map((session) => session.meeting_key),
+    );
+    const preferred = meetings.find((meeting) => accessibleMeetingKeys.has(meeting.meeting_key)) ?? meetings[0];
 
     if (preferred) {
       setSelectedMeetingKey(preferred.meeting_key);
     }
-  }, [latestMeetingQuery.data, meetings, selectedMeetingKey, selectedYear]);
+  }, [meetings, nowMs, seasonSessions, selectedMeetingKey, selectedYear]);
 
   const sessionsQuery = useEndpointData<Session>(
     'sessions',
@@ -1023,14 +1055,6 @@ function App() {
       ),
     [sessionsQuery.data],
   );
-  const seasonSessions = useMemo(
-    () =>
-      [...seasonSessionsQuery.data].sort(
-        (left, right) =>
-          parseOpenF1Date(String(left.date_start ?? '')) - parseOpenF1Date(String(right.date_start ?? '')),
-      ),
-    [seasonSessionsQuery.data],
-  );
 
   useEffect(() => {
     if (!sessions.length) {
@@ -1041,12 +1065,8 @@ function App() {
       return;
     }
 
-    const raceSession =
-      [...sessions].reverse().find((session) => isGrandPrixRaceSession(session)) ||
-      [...sessions].reverse().find((session) => isRaceSession(session));
-
-    setSelectedSessionKey((raceSession || sessions[sessions.length - 1])?.session_key ?? null);
-  }, [selectedSessionKey, sessions]);
+    setSelectedSessionKey(getPreferredSession(sessions, nowMs)?.session_key ?? null);
+  }, [nowMs, selectedSessionKey, sessions]);
 
   useEffect(() => {
     setSelectedDriverNumber(null);
@@ -1064,7 +1084,7 @@ function App() {
   );
   const driverLookup = useMemo(() => new Map(drivers.map((driver) => [driver.driver_number, driver])), [drivers]);
 
-  const selectedMeeting = meetings.find((meeting) => meeting.meeting_key === selectedMeetingKey) ?? latestMeetingQuery.data[0];
+  const selectedMeeting = meetings.find((meeting) => meeting.meeting_key === selectedMeetingKey);
   const selectedSession = sessions.find((session) => session.session_key === selectedSessionKey);
   const meetingLookup = useMemo(() => new Map(meetings.map((meeting) => [meeting.meeting_key, meeting])), [meetings]);
   const sessionPhase = getSessionPhase(selectedSession, nowMs);
@@ -1081,6 +1101,14 @@ function App() {
     () => seasonSessions.filter((session) => isGrandPrixRaceSession(session)),
     [seasonSessions],
   );
+  const latestSeasonSession = seasonSessions[seasonSessions.length - 1];
+  const isUsingFreeTierFallback =
+    selectedYear === currentYear &&
+    Boolean(latestSeasonSession) &&
+    !isFreelyAccessibleSession(latestSeasonSession, nowMs) &&
+    selectedSession !== undefined &&
+    isFreelyAccessibleSession(selectedSession, nowMs) &&
+    selectedSession.session_key !== latestSeasonSession?.session_key;
   const seasonRaceSessionKeySet = useMemo(
     () => new Set(seasonRaceSessions.map((session) => session.session_key)),
     [seasonRaceSessions],
@@ -1964,6 +1992,11 @@ function App() {
             <span className={`session-state-pill ${isSessionLive ? 'is-live' : ''}`}>{getSessionState(selectedSession, nowMs)}</span>
             {isSessionLive ? <span className="session-state-pill is-refresh">Auto-refresh {Math.round(LIVE_REFRESH_MS / 1000)}s</span> : null}
           </div>
+          {isUsingFreeTierFallback ? (
+            <div className="fallback-banner">
+              Session live non disponible sur le palier gratuit OpenF1. Affichage de la derniere session terminee accessible.
+            </div>
+          ) : null}
           <p className="hero-subline">
             {getMeetingLabel(selectedMeeting)} · {formatMeetingDateRange(selectedMeeting)} · {getSessionLabel(selectedSession?.session_name)}
           </p>
