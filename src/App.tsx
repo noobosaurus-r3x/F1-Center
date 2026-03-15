@@ -1022,6 +1022,7 @@ function App() {
       ),
     [seasonSessionsQuery.data],
   );
+  const scheduleError = meetingsQuery.error || seasonSessionsQuery.error;
 
   useEffect(() => {
     if (!meetings.length) {
@@ -2024,6 +2025,12 @@ function App() {
       </div>
 
       <section className="control-rack panel">
+        {scheduleError ? (
+          <div className="schedule-outage-banner">
+            OpenF1 ne renvoie pas le calendrier des Grands Prix pour le moment. Les menus Grand Prix et Session resteront limites tant que
+            l'API repond en erreur.
+          </div>
+        ) : null}
         <div className="control-grid">
           <label>
             <span>Saison</span>
@@ -2039,26 +2046,36 @@ function App() {
             <span>Grand Prix</span>
             <select
               value={selectedMeetingKey ?? ''}
+              disabled={!meetings.length}
               onChange={(event) => setSelectedMeetingKey(Number(event.target.value) || null)}
             >
-              {meetings.map((meeting) => (
-                <option key={meeting.meeting_key} value={meeting.meeting_key}>
-                  {getMeetingOptionLabel(meeting)}
-                </option>
-              ))}
+              {meetings.length ? (
+                meetings.map((meeting) => (
+                  <option key={meeting.meeting_key} value={meeting.meeting_key}>
+                    {getMeetingOptionLabel(meeting)}
+                  </option>
+                ))
+              ) : (
+                <option value="">Calendrier OpenF1 indisponible</option>
+              )}
             </select>
           </label>
           <label>
             <span>Session</span>
             <select
               value={selectedSessionKey ?? ''}
+              disabled={!sessions.length}
               onChange={(event) => setSelectedSessionKey(Number(event.target.value) || null)}
             >
-              {sessions.map((session) => (
-                <option key={session.session_key} value={session.session_key}>
-                  {getSessionLabel(session.session_name)}
-                </option>
-              ))}
+              {sessions.length ? (
+                sessions.map((session) => (
+                  <option key={session.session_key} value={session.session_key}>
+                    {getSessionLabel(session.session_name)}
+                  </option>
+                ))
+              ) : (
+                <option value="">Sessions OpenF1 indisponibles</option>
+              )}
             </select>
           </label>
         </div>

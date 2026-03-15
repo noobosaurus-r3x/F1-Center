@@ -179,6 +179,16 @@ button {
   line-height: 1.45;
 }
 
+.schedule-outage-banner {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 77, 77, 0.34);
+  border-radius: 16px;
+  background: rgba(255, 77, 77, 0.1);
+  color: #ffc0c0;
+  line-height: 1.5;
+}
+
 .session-state-pill.is-live {
   color: var(--f1-green);
   border-color: rgba(0, 210, 106, 0.32);
